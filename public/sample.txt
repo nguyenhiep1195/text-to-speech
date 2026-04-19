@@ -1,0 +1,9 @@
+Xin chào! Đây là tệp văn bản mẫu dành cho công cụ chuyển đổi văn bản thành giọng nói.
+
+Công cụ này hỗ trợ tiếng Việt với giọng đọc tự nhiên, sử dụng công nghệ Microsoft Edge TTS.
+
+Bạn có thể thay thế nội dung tệp này bằng bất kỳ đoạn văn bản nào bạn muốn chuyển đổi thành âm thanh.
+
+Ví dụ: một bài báo, một câu chuyện ngắn, hoặc nội dung học tập.
+
+Chúc bạn sử dụng vui vẻ!
