@@ -81,22 +81,26 @@ def convert_text(
     rate: str = "+0%",
     pitch: str = "+0Hz",
     volume: str = "+0%",
+    ssml_mode: bool = False,
     # common params
     lang: str = "vi",
     speed: float = 1.0,
+    write_audio: bool = True,
 ) -> EngineResult:
     """Convert *text* to speech using the chosen engine.
 
     Args:
         text:         Input text.
         output_path:  Destination audio file path.
-        engine_name:  One of ``"edge-tts"``, ``"gtts"``, ``"kokoro"``.
+        engine_name:  One of ``"edge-tts"``, ``"gtts"``.
         voice:        edge-tts voice name (edge-tts only).
         rate:         Rate offset string, e.g. ``"+10%"`` (edge-tts only).
         pitch:        Pitch offset, e.g. ``"-20Hz"`` (edge-tts only).
         volume:       Volume offset (edge-tts only).
-        lang:         ISO 639-1 language code for gtts/kokoro (``"vi"``, ``"en"`` …).
-        speed:        Speed multiplier 0.5–2.0 (gtts/kokoro; edge-tts uses rate).
+        lang:         ISO 639-1 language code for gtts (``"vi"``, ``"en"`` …).
+        speed:        Speed multiplier 0.5–2.0 (gtts; edge-tts uses rate).
+        write_audio:  If False (edge-tts only), skip writing MP3 but still run
+                      synthesis to collect word-boundary timings for SRT.
 
     Returns:
         :class:`EngineResult` with audio path and timing boundaries (if available).
@@ -112,6 +116,8 @@ def convert_text(
         rate=rate,
         pitch=pitch,
         volume=volume,
+        ssml_mode=ssml_mode,
+        write_audio=write_audio,
     )
 
 

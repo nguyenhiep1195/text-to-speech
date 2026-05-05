@@ -38,12 +38,28 @@ class EdgeTTSEngine(BaseTTSEngine):
         rate: str | None = None,
         pitch: str = "+0Hz",
         volume: str = "+0%",
-        **kwargs,
+        ssml_mode: bool = False,
+        write_audio: bool = True,
     ) -> EngineResult:
         resolved_voice = voice or _LANG_TO_DEFAULT_VOICE.get(lang, "vi-VN-HoaiMyNeural")
-        resolved_rate = rate if rate is not None else _speed_to_rate(speed)
+        if ssml_mode:
+            # Text is already SSML body — use neutral rate/pitch so the
+            # AI-generated <prosody> tags control the speech entirely.
+            resolved_rate = "+0%"
+            resolved_pitch = "+0Hz"
+        else:
+            resolved_rate = rate if rate is not None else _speed_to_rate(speed)
+            resolved_pitch = pitch
         return asyncio.run(
-            self._convert_async(text, output_path, resolved_voice, resolved_rate, pitch, volume)
+            self._convert_async(
+                text,
+                output_path,
+                resolved_voice,
+                resolved_rate,
+                resolved_pitch,
+                volume,
+                write_audio=write_audio,
+            )
         )
 
     # ------------------------------------------------------------------
@@ -58,17 +74,26 @@ class EdgeTTSEngine(BaseTTSEngine):
         rate: str,
         pitch: str,
         volume: str,
+        *,
+        write_audio: bool = True,
+        on_progress=None,
     ) -> EngineResult:
-        output_path = ensure_output_dir(output_path)
+        output_path = Path(output_path)
+        if write_audio:
+            output_path = ensure_output_dir(output_path)
         chunks = chunk_text(text)
-        logger.info("[edge-tts] %d chunk(s) | voice=%s rate=%s pitch=%s", len(chunks), voice, rate, pitch)
+        total = len(chunks)
+        logger.info("[edge-tts] %d chunk(s) | voice=%s rate=%s pitch=%s", total, voice, rate, pitch)
+
+        if on_progress:
+            await on_progress(0, total)
 
         all_audio: list[bytes] = []
         all_boundaries: list[dict] = []
         cumulative_ms: float = 0.0
 
         for idx, chunk in enumerate(chunks, 1):
-            logger.info("  chunk %d/%d (%d chars)", idx, len(chunks), len(chunk))
+            logger.info("  chunk %d/%d (%d chars)", idx, total, len(chunk))
             audio_bytes, boundaries = await self._convert_chunk(chunk, voice, rate, pitch, volume)
 
             for b in boundaries:
@@ -85,13 +110,19 @@ class EdgeTTSEngine(BaseTTSEngine):
             else:
                 cumulative_ms += (len(chunk.split()) / 150) * 60_000
 
-            all_audio.append(audio_bytes)
+            if write_audio:
+                all_audio.append(audio_bytes)
 
-        with output_path.open("wb") as fh:
-            for chunk_bytes in all_audio:
-                fh.write(chunk_bytes)
+            if on_progress:
+                await on_progress(idx, total)
 
-        logger.info("[edge-tts] saved → %s", output_path)
+        if write_audio:
+            with output_path.open("wb") as fh:
+                for chunk_bytes in all_audio:
+                    fh.write(chunk_bytes)
+            logger.info("[edge-tts] saved → %s", output_path)
+        else:
+            logger.info("[edge-tts] audio skipped (SRT-only); boundaries collected")
         return EngineResult(audio_path=output_path, boundaries=all_boundaries)
 
     @staticmethod

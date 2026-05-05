@@ -11,8 +11,7 @@
 7. [Tạo phụ đề SRT](#7-tạo-phụ-đề-srt)
 8. [Toàn bộ tùy chọn CLI](#8-toàn-bộ-tùy-chọn-cli)
 9. [So sánh các engine](#9-so-sánh-các-engine)
-10. [Cài đặt Kokoro (offline)](#10-cài-đặt-kokoro-offline)
-11. [Xử lý lỗi thường gặp](#11-xử-lý-lỗi-thường-gặp)
+10. [Xử lý lỗi thường gặp](#10-xử-lý-lỗi-thường-gặp)
 
 ---
 
@@ -21,7 +20,7 @@
 ### Yêu cầu
 
 - Python **3.10+**
-- Kết nối internet (cho `edge-tts` và `gtts`; `kokoro` chỉ cần khi tải model lần đầu)
+- Kết nối internet (cho `edge-tts` và `gtts`)
 
 ### Bước 1 — Tạo môi trường ảo
 
@@ -39,9 +38,6 @@ pip install edge-tts
 
 # Cài thêm Google TTS
 pip install gTTS
-
-# Cài thêm Kokoro (offline, ~82 MB model tải lần đầu)
-pip install kokoro soundfile
 ```
 
 ---
@@ -61,8 +57,7 @@ text-to-speech/
     │   ├── __init__.py   ← Registry engine
     │   ├── base.py       ← Abstract base class
     │   ├── edge.py       ← edge-tts engine
-    │   ├── gtts_engine.py← gTTS engine
-    │   └── kokoro_engine.py ← Kokoro engine
+    │   └── gtts_engine.py← gTTS engine
     ├── tts.py            ← Facade + VOICE_PRESETS
     ├── srt.py            ← Tạo file SRT
     ├── utils.py          ← Đọc file, chunking, encoding
@@ -84,7 +79,7 @@ python main.py --input public/sample.txt
 
 ## 4. Chọn engine TTS
 
-Dùng `--engine` để chọn engine. Có 3 lựa chọn:
+Dùng `--engine` để chọn engine. Có 2 lựa chọn:
 
 ```bash
 # edge-tts (mặc định) — Microsoft Edge, giọng neural tự nhiên
@@ -92,12 +87,9 @@ python main.py --input public/sample.txt --engine edge-tts
 
 # gTTS — Google TTS, hỗ trợ tiếng Việt rất tốt
 python main.py --input public/sample.txt --engine gtts
-
-# Kokoro — chạy offline, không cần internet (chỉ tiếng Anh)
-python main.py --input public/story_en.txt --engine kokoro --lang en
 ```
 
-Với `gtts` và `kokoro`, dùng `--lang` để chỉ định ngôn ngữ:
+Với `gtts`, dùng `--lang` để chỉ định ngôn ngữ:
 
 ```bash
 python main.py --input public/sample.txt --engine gtts --lang vi     # tiếng Việt
@@ -231,7 +223,7 @@ python main.py [OPTIONS]
 Tùy chọn chính:
   --input,  -i  FILE     File .txt đầu vào (bắt buộc)
   --output, -o  FILE     File audio đầu ra (mặc định: output/<tên>.mp3)
-  --engine      ENGINE   TTS engine: edge-tts | gtts | kokoro (mặc định: edge-tts)
+  --engine      ENGINE   TTS engine: edge-tts | gtts (mặc định: edge-tts)
   --lang        LANG     Mã ngôn ngữ ISO 639-1: vi, en, fr, ja... (mặc định: vi)
 
 Tốc độ:
@@ -258,70 +250,25 @@ Khác:
 
 ## 9. So sánh các engine
 
-| Tiêu chí | edge-tts | gTTS | Kokoro |
-|---|:---:|:---:|:---:|
-| **Tiếng Việt** | ✅ Rất tốt | ✅ Tốt | ❌ Không hỗ trợ |
-| **Chất lượng giọng** | ⭐⭐⭐⭐⭐ Neural | ⭐⭐⭐⭐ Neural | ⭐⭐⭐⭐ Neural |
-| **Cần internet** | ✅ Có | ✅ Có | ❌ Offline sau lần đầu |
-| **Tạo SRT** | ✅ Có | ❌ Không | ❌ Không |
-| **Điều chỉnh pitch** | ✅ Có | ❌ Không | ❌ Không |
-| **Điều chỉnh tốc độ** | ✅ Chi tiết | ⚠️ Chỉ slow/fast | ✅ Tùy ý |
-| **Cần cài thêm** | Không | `pip install gTTS` | `pip install kokoro soundfile` |
-| **Định dạng output** | MP3 | MP3 | **WAV** |
-| **API key** | Không | Không | Không |
+| Tiêu chí | edge-tts | gTTS |
+|---|:---:|:---:|
+| **Tiếng Việt** | ✅ Rất tốt | ✅ Tốt |
+| **Chất lượng giọng** | ⭐⭐⭐⭐⭐ Neural | ⭐⭐⭐⭐ Neural |
+| **Cần internet** | ✅ Có | ✅ Có |
+| **Tạo SRT** | ✅ Có | ❌ Không |
+| **Điều chỉnh pitch** | ✅ Có | ❌ Không |
+| **Điều chỉnh tốc độ** | ✅ Chi tiết | ⚠️ Chỉ slow/fast |
+| **Cần cài thêm** | Không | `pip install gTTS` |
+| **Định dạng output** | MP3 | MP3 |
+| **API key** | Không | Không |
 
 **Khuyến nghị:**
 - Tiếng Việt → **edge-tts** (chất lượng tốt nhất, có SRT)
 - Cần dùng Google → **gTTS**
-- Tiếng Anh offline → **Kokoro**
 
 ---
 
-## 10. Cài đặt Kokoro (offline)
-
-```bash
-pip install kokoro soundfile
-```
-
-Lần đầu chạy, Kokoro tự động tải model ~82 MB từ HuggingFace:
-
-```bash
-python main.py --input public/story_en.txt --engine kokoro --lang en
-```
-
-### Voice Kokoro phổ biến
-
-```
-Nữ: af_bella, af_sarah, af_nicole, af_sky
-Nam: am_adam, am_michael, bm_george (British)
-```
-
-```bash
-python main.py --input public/story_en.txt \
-  --engine kokoro \
-  --lang en \
-  --voice af_bella \
-  --speed 0.9
-```
-
-### Ngôn ngữ Kokoro hỗ trợ
-
-| `--lang` | Ngôn ngữ |
-|---|---|
-| `en` | American English |
-| `en-gb` | British English |
-| `es` | Tây Ban Nha |
-| `fr` | Pháp |
-| `hi` | Hindi |
-| `it` | Ý |
-| `ja` | Nhật |
-| `ko` | Hàn |
-| `pt` | Bồ Đào Nha |
-| `zh` | Tiếng Trung |
-
----
-
-## 11. Xử lý lỗi thường gặp
+## 10. Xử lý lỗi thường gặp
 
 ### `FileNotFoundError: Input file not found`
 
@@ -335,12 +282,6 @@ python main.py --input public/ten_file.txt
 
 ```bash
 pip install gTTS
-```
-
-### `kokoro is not installed`
-
-```bash
-pip install kokoro soundfile
 ```
 
 ### `ModuleNotFoundError: No module named 'edge_tts'`

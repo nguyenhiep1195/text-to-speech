@@ -1,47 +1,45 @@
 # TTS Studio – Text to Speech Web App
 
-Ứng dụng web chuyển đổi văn bản thành giọng nói với backend Python FastAPI và frontend Next.js.
+Ứng dụng web chuyển đổi văn bản thành giọng nói với backend Python FastAPI và frontend VueJS 3.
 
 ## Cấu trúc dự án (Monorepo)
 
 ```
-text-to-speech/
-├── backend/                    # FastAPI Python backend
+my-tools/
+├── backend/                     # FastAPI Python backend
 │   ├── api/
-│   │   └── index.py            # Vercel serverless entry point
+│   │   └── index.py             # Vercel serverless entry point
 │   ├── app/
-│   │   ├── main.py
-│   │   ├── config.py
-│   │   ├── auth.py
-│   │   ├── models.py
+│   │   ├── main.py              # FastAPI app factory
+│   │   ├── config.py            # Environment config
 │   │   └── routes/
-│   │       ├── auth_routes.py  # POST /api/auth/login
-│   │       └── tts_routes.py   # TTS endpoints
-│   ├── src/                    # TTS engine (copy của root src/ – cho Vercel)
+│   │       ├── tts_routes.py    # TTS endpoints
+│   │       └── health.py        # Health check
+│   ├── src/                     # TTS engine (copy of root src/)
 │   ├── requirements.txt
 │   ├── vercel.json
-│   ├── .env                    # Credentials (không commit)
-│   ├── .env.example
-│   └── run.py
-├── frontend/                   # Next.js frontend
+│   ├── Dockerfile
+│   └── .env.example
+├── frontend/                    # VueJS 3 + Vite frontend
 │   ├── src/
-│   │   ├── app/
-│   │   │   ├── layout.tsx
-│   │   │   ├── page.tsx        # Trang chủ
-│   │   │   ├── login/          # Trang đăng nhập
-│   │   │   ├── audio/          # Trang chuyển đổi TTS
-│   │   │   └── not-found.tsx
+│   │   ├── App.vue
+│   │   ├── main.js
 │   │   ├── components/
-│   │   │   └── Navbar.tsx
-│   │   ├── lib/
-│   │   │   ├── api.ts
-│   │   │   └── auth.ts
-│   │   └── proxy.ts            # Route protection (Next.js 16)
+│   │   │   ├── TextInput.vue
+│   │   │   ├── LanguageSelect.vue
+│   │   │   ├── VoiceList.vue
+│   │   │   ├── VoiceSliders.vue
+│   │   │   └── AudioPlayer.vue
+│   │   └── composables/
+│   │       └── useTTS.js
 │   ├── vercel.json
-│   ├── .env.local              # Local dev
-│   ├── .env.example
-│   └── package.json
-└── src/                        # TTS engine gốc (dùng cho CLI & local dev)
+│   ├── Dockerfile
+│   ├── nginx.conf
+│   └── .env.example
+├── docker-compose.yml           # Docker multi-service setup
+├── src/                         # TTS engine gốc (dùng cho CLI)
+├── main.py                      # CLI entry point
+└── requirements.txt             # CLI dependencies
 ```
 
 ---
@@ -51,11 +49,9 @@ text-to-speech/
 ### Backend
 
 ```bash
-# Dùng virtual environment có sẵn
-.venv/bin/pip install -r backend/requirements.txt
-
 cd backend
-../.venv/bin/python run.py
+pip install -r requirements.txt
+python run.py
 # → http://localhost:8000
 # → Docs: http://localhost:8000/docs
 ```
@@ -66,11 +62,16 @@ cd backend
 cd frontend
 npm install
 npm run dev
-# → http://localhost:3000
+# → http://localhost:5173
 ```
 
-**Tài khoản mặc định** (trong `backend/.env`):
-- Username: `admin` | Password: `admin123`
+### Docker (cả 2 services)
+
+```bash
+docker-compose up --build
+# → Frontend: http://localhost:3000
+# → Backend:  http://localhost:8000
+```
 
 ---
 
@@ -80,39 +81,33 @@ Tạo **2 Vercel project** riêng biệt từ cùng repository.
 
 ### Bước 1 – Deploy Backend
 
-1. Vào [vercel.com](https://vercel.com) → **Add New Project** → Import repository này
+1. Vào [vercel.com](https://vercel.com) → **Add New Project** → Import repository
 2. **Root Directory**: `backend`
 3. **Framework Preset**: Other
-4. Thêm **Environment Variables** trong Vercel dashboard:
+4. Thêm **Environment Variables**:
 
-   | Key | Value |
-   |-----|-------|
-   | `TTS_USERNAME` | `admin` |
-   | `TTS_PASSWORD` | _(mật khẩu mạnh)_ |
-   | `SECRET_KEY` | _(chuỗi ngẫu nhiên 32 ký tự)_ |
-   | `CORS_ORIGINS` | `https://your-frontend.vercel.app` |
+   | Key               | Value                              |
+   | ----------------- | ---------------------------------- |
+   | `CORS_ORIGINS`    | `https://your-frontend.vercel.app` |
+   | `MAX_TEXT_LENGTH` | `5000`                             |
 
 5. **Deploy** → ghi lại URL, ví dụ: `https://tts-backend-xxx.vercel.app`
 
-> **Lưu ý**: Vercel Hobby plan cho phép function chạy tối đa **60 giây**.  
-> Với văn bản dài, nâng lên Pro plan để được **300 giây** (`maxDuration` đã cấu hình sẵn).
-
----
+> **Lưu ý**: Vercel Hobby plan cho phép function chạy tối đa **60 giây**.
+> Với văn bản dài, nâng lên Pro plan để được **300 giây**.
 
 ### Bước 2 – Deploy Frontend
 
 1. **Add New Project** → Import lại cùng repository
 2. **Root Directory**: `frontend`
-3. **Framework Preset**: Next.js (tự động detect)
+3. **Framework Preset**: Vite
 4. Thêm **Environment Variables**:
 
-   | Key | Value |
-   |-----|-------|
-   | `NEXT_PUBLIC_API_URL` | `https://tts-backend-xxx.vercel.app` |
+   | Key            | Value                                |
+   | -------------- | ------------------------------------ |
+   | `VITE_API_URL` | `https://tts-backend-xxx.vercel.app` |
 
 5. **Deploy**
-
----
 
 ### Bước 3 – Cập nhật CORS
 
@@ -128,34 +123,53 @@ Redeploy backend để áp dụng.
 
 ## API Endpoints
 
-| Method | Path | Mô tả |
-|--------|------|-------|
-| POST | `/api/auth/login` | Đăng nhập, nhận JWT |
-| GET | `/api/voices` | Danh sách giọng đọc |
-| **POST** | **`/api/tts/convert`** | **Chuyển đổi TTS đồng bộ → ZIP (dùng cho Vercel)** |
-| POST | `/api/tts` | Tạo job chuyển đổi TTS (local dev) |
-| GET | `/api/tts/{job_id}` | Kiểm tra trạng thái job |
-| GET | `/api/tts/{job_id}/download/mp3` | Tải file MP3 |
-| GET | `/api/tts/{job_id}/download/srt` | Tải file SRT |
+| Method   | Path                   | Mô tả                                |
+| -------- | ---------------------- | ------------------------------------ |
+| GET      | `/api/health`          | Health check                         |
+| GET      | `/api/voices`          | Danh sách giọng đọc + engines        |
+| **POST** | **`/api/tts/convert`** | **Chuyển đổi TTS → ZIP (mp3 + srt)** |
 
-### Endpoint chính cho production: `POST /api/tts/convert`
+### POST `/api/tts/convert`
 
-- Nhận: `{text, voice, speed, engine, words_per_cue}`
-- Trả về: `application/zip` chứa `output.mp3` và `output.srt`
-- Frontend tự động giải nén bằng JSZip và cung cấp nút tải từng file
+**Request Body:**
+
+```json
+{
+  "text": "Xin chào thế giới",
+  "voice": "vi-female",
+  "speed": 1.0,
+  "pitch": "+0Hz",
+  "engine": "edge-tts",
+  "generate_srt": false,
+  "words_per_cue": 8
+}
+```
+
+**Response:** `application/zip` chứa `output.mp3` và `output.srt` (nếu `generate_srt=true`).
 
 ---
 
 ## Giọng đọc hỗ trợ
 
-| Preset | Mô tả |
-|--------|-------|
-| `vi-female` | Nữ · giọng chuẩn |
-| `vi-female-slow` | Nữ · chậm rãi, rõ ràng |
-| `vi-female-story` | Nữ · đọc truyện, ấm áp |
-| `vi-male` | Nam · giọng chuẩn |
-| `vi-male-deep` | Nam · trầm ấm |
-| `vi-male-story` | Nam · đọc truyện, trầm lắng |
-| `en-female` | English female |
-| `en-male` | English male |
-| ... | _(14 giọng tổng cộng)_ |
+| Preset            | Mô tả                       |
+| ----------------- | --------------------------- |
+| `vi-female`       | Nữ · giọng chuẩn            |
+| `vi-female-slow`  | Nữ · chậm rãi, rõ ràng      |
+| `vi-female-story` | Nữ · đọc truyện, ấm áp      |
+| `vi-male`         | Nam · giọng chuẩn           |
+| `vi-male-deep`    | Nam · trầm ấm               |
+| `vi-male-story`   | Nam · đọc truyện, trầm lắng |
+| `en-female`       | English female              |
+| `en-male`         | English male                |
+| ...               | _(14 giọng tổng cộng)_      |
+
+---
+
+## CLI (vẫn hoạt động)
+
+```bash
+python main.py --input sample.txt --voice vi-female-story --srt
+python main.py --list-voices
+```
+
+Xem thêm: [GUIDE.md](GUIDE.md)

@@ -13,12 +13,10 @@ from __future__ import annotations
 from .base import BaseTTSEngine, EngineResult
 from .edge import EdgeTTSEngine
 from .gtts_engine import GTTSEngine
-from .kokoro_engine import KokoroEngine
 
 ENGINES: dict[str, type[BaseTTSEngine]] = {
     "edge-tts": EdgeTTSEngine,
     "gtts":     GTTSEngine,
-    "kokoro":   KokoroEngine,
 }
 
 DEFAULT_ENGINE = "edge-tts"

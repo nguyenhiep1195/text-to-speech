@@ -6,6 +6,7 @@ import argparse
 from pathlib import Path
 
 from .engines import DEFAULT_ENGINE, ENGINES
+from .paths import AUDIO_FILENAME_MP3, INPUT_DIR, OUTPUT_DIR
 from .tts import DEFAULT_PRESET, VOICE_PRESETS
 
 
@@ -16,8 +17,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python main.py",
         description=(
-            "Text-to-Speech CLI — converts .txt files to .mp3/.wav audio "
-            "with optional .srt subtitle generation."
+            "Text-to-Speech CLI — reads .txt from the input/ folder, writes "
+            "output/<tên-file>/audio.mp3, optional .srt."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=_build_epilog(),
@@ -29,15 +30,18 @@ def build_parser() -> argparse.ArgumentParser:
         required=False,
         default=None,
         metavar="FILE",
-        help="Path to the input .txt file (e.g. public/sample.txt).",
+        help=(
+            "Input .txt: filename inside input/ (e.g. story.txt) or any path. "
+            "If omitted, all *.txt files in input/ are converted."
+        ),
     )
     parser.add_argument(
         "--output", "-o",
         default=None,
         metavar="FILE",
         help=(
-            "Path for the output audio file. "
-            "Defaults to output/<input_stem>.mp3 (or .wav for kokoro)."
+            "Output audio path (overrides default layout). "
+            f"Default: output/<stem>/{AUDIO_FILENAME_MP3}."
         ),
     )
 
@@ -50,7 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             f"TTS engine to use. Choices: {', '.join(engine_choices)}. "
             f"Default: {DEFAULT_ENGINE}. "
-            "edge-tts=online/Microsoft, gtts=online/Google, kokoro=offline/neural"
+            "edge-tts=online/Microsoft, gtts=online/Google"
         ),
     )
     parser.add_argument(
@@ -58,13 +62,21 @@ def build_parser() -> argparse.ArgumentParser:
         default="vi",
         metavar="LANG",
         help=(
-            "Language code for gtts/kokoro engines (ISO 639-1). "
-            "Examples: vi, en, fr, ja. Default: vi. "
-            "Note: kokoro does not support Vietnamese — falls back to English."
+            "Language code for gtts engine (ISO 639-1). "
+            "Examples: vi, en, fr, ja. Default: vi."
         ),
     )
 
     # --- Subtitle ---
+    parser.add_argument(
+        "--srt-only",
+        action="store_true",
+        default=False,
+        help=(
+            "Only write the .srt file (implies --srt); do not save MP3. "
+            "Requires --engine edge-tts. Still calls the API to obtain timings."
+        ),
+    )
     parser.add_argument(
         "--srt",
         action="store_true",
@@ -116,7 +128,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--speed",
         type=float,
-        default=1.6,
+        default=1.35,
         metavar="SPEED",
         help=(
             "Speed multiplier 0.5–2.0 (1.0=normal, 2.0=double speed). "
@@ -131,6 +143,66 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             'edge-tts rate offset, e.g. "+10%%" or "-5%%". '
             "Ignored when --speed is set."
+        ),
+    )
+
+    # --- AI SSML ---
+    ai_group = parser.add_argument_group(
+        "AI SSML options",
+        "Use AI (Gemini/ChatGPT) to generate natural SSML before TTS synthesis.",
+    )
+    ai_group.add_argument(
+        "--ai-ssml",
+        action="store_true",
+        default=False,
+        help=(
+            "Use AI to convert input text to SSML first, then synthesize with edge-tts. "
+            "Choose provider with --ai-provider (default: gemini)."
+        ),
+    )
+    ai_group.add_argument(
+        "--ai-provider",
+        default="gemini",
+        choices=["gemini", "openai"],
+        metavar="PROVIDER",
+        help=(
+            "AI provider for SSML generation: gemini (free, default) or openai (paid). "
+        ),
+    )
+    ai_group.add_argument(
+        "--gemini-key",
+        default=None,
+        metavar="KEY",
+        help=(
+            "Google Gemini API key (overrides GEMINI_API_KEY env var). "
+            "Get a free key at https://aistudio.google.com/apikey"
+        ),
+    )
+    ai_group.add_argument(
+        "--gemini-model",
+        default="gemini-2.0-flash",
+        metavar="MODEL",
+        help="Gemini model to use (default: gemini-2.0-flash).",
+    )
+    ai_group.add_argument(
+        "--openai-key",
+        default=None,
+        metavar="KEY",
+        help="OpenAI API key (overrides OPENAI_API_KEY env var).",
+    )
+    ai_group.add_argument(
+        "--openai-model",
+        default="gpt-4o",
+        metavar="MODEL",
+        help="ChatGPT model to use for SSML generation (default: gpt-4o).",
+    )
+    ai_group.add_argument(
+        "--save-ssml",
+        default=None,
+        metavar="FILE",
+        help=(
+            "Save generated SSML to this path "
+            f"(default: output/<stem>/<stem>.ssml when --ai-ssml is set)."
         ),
     )
 
@@ -153,14 +225,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _build_epilog() -> str:
     lines = [
-        "  # edge-tts (default) — giọng truyện nữ",
-        "  python main.py --input public/sample.txt --voice vi-female-story --srt",
+        "  # Chỉ tạo phụ đề .srt (không lưu MP3) — vẫn dùng edge-tts để lấy timing",
+        "  python main.py --input sample.txt --voice vi-female-story --srt-only",
         "",
-        "  # gTTS — Google, tốc độ 1.5x",
-        "  python main.py --input public/sample.txt --engine gtts --speed 1.5",
+        "  # edge-tts — một file: output/sample/audio.mp3",
+        "  python main.py --input sample.txt --voice vi-female-story --srt",
         "",
-        "  # Kokoro — offline, tiếng Anh",
-        "  python main.py --input public/story_en.txt --engine kokoro --lang en",
+        "  # Tất cả file *.txt trong input/",
+        "  python main.py",
+        "",
+        "  # gTTS",
+        "  python main.py --input sample.txt --engine gtts --speed 1.5",
         "",
         "  # Xem preset",
         "  python main.py --list-voices",
@@ -210,14 +285,49 @@ def resolve_args(args: argparse.Namespace) -> argparse.Namespace:
         args.rate  = resolved_rate
         args.pitch = resolved_pitch
 
-    # --- Default output path ---
-    if args.output is None:
-        stem = Path(args.input).stem
-        ext = ".wav" if args.engine == "kokoro" else ".mp3"
-        args.output = str(Path("output") / f"{stem}{ext}")
-
-    # --- Default SRT path ---
-    if args.srt and args.srt_output is None:
-        args.srt_output = str(Path(args.output).with_suffix(".srt"))
-
     return args
+
+
+def resolve_input_path(raw: str, *, input_dir: Path = INPUT_DIR) -> Path:
+    """Resolve CLI input to an absolute path.
+
+    Relative paths are tried against the current working directory first;
+    if not found, ``input_dir`` is used (so ``story.txt`` → ``input/story.txt``).
+    """
+    p = Path(raw)
+    if p.is_absolute():
+        return p.resolve()
+    cwd_try = (Path.cwd() / p).resolve()
+    if cwd_try.is_file():
+        return cwd_try
+    return (input_dir / p).resolve()
+
+
+def collect_input_txt_paths(raw_input: str | None, *, input_dir: Path = INPUT_DIR) -> list[Path]:
+    """Return ordered list of .txt files to convert."""
+    if raw_input is not None:
+        return [resolve_input_path(raw_input, input_dir=input_dir)]
+    paths = sorted(input_dir.glob("*.txt"))
+    return paths
+
+
+def apply_output_paths_for_input(
+    args: argparse.Namespace,
+    input_path: Path,
+    *,
+    output_dir: Path = OUTPUT_DIR,
+) -> None:
+    """Set ``args.output``, optional ``args.srt_output`` / ``args.save_ssml`` defaults."""
+    if args.output is None:
+        stem = input_path.stem
+        args.output = str(output_dir / stem / AUDIO_FILENAME_MP3)
+    else:
+        args.output = str(Path(args.output).expanduser().resolve())
+
+    out_audio = Path(args.output)
+
+    if args.srt and args.srt_output is None:
+        args.srt_output = str(out_audio.with_suffix(".srt"))
+
+    if args.ai_ssml and args.save_ssml is None:
+        args.save_ssml = str(out_audio.parent / f"{input_path.stem}.ssml")

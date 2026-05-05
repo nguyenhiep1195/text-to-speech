@@ -1,234 +1,263 @@
-"""TTS routes – supports both job-based (local) and sync-zip (Vercel) flows."""
+"""TTS conversion and voice listing endpoints."""
+
 from __future__ import annotations
 
+import asyncio
+import base64
 import io
-import sys
-import uuid
+import json
 import logging
-import threading
 import tempfile
 import zipfile
 from pathlib import Path
-from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
-from fastapi.responses import FileResponse, Response
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
-from ..auth import get_current_user
-from ..models import TTSRequest, JobResponse, JobStatus
-
-# ---------------------------------------------------------------------------
-# Import TTS engine – prefer backend/src/ (Vercel), fall back to repo root src/
-# ---------------------------------------------------------------------------
-_BACKEND_DIR = Path(__file__).parent.parent.parent   # backend/
-_REPO_ROOT = _BACKEND_DIR.parent                     # text-to-speech/
-
-for _p in [str(_BACKEND_DIR), str(_REPO_ROOT)]:
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
-
-from src.tts import convert_text, VOICE_PRESETS  # noqa: E402
-from src.srt import generate_srt_file           # noqa: E402
-
-router = APIRouter(tags=["tts"])
 logger = logging.getLogger(__name__)
 
-# In-memory job store (local dev only – not shared across serverless invocations)
-_jobs: dict[str, dict] = {}
-_TEMP_DIR = Path(tempfile.gettempdir()) / "tts_jobs"
-_TEMP_DIR.mkdir(exist_ok=True)
+router = APIRouter(tags=["tts"])
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+# ── Request / Response models ────────────────────────────────────────────
 
-def _resolve_voice_params(voice: str) -> dict:
-    if voice in VOICE_PRESETS:
-        preset = VOICE_PRESETS[voice]
-        return {"voice": preset.voice, "rate": preset.rate, "pitch": preset.pitch, "volume": "+0%"}
-    return {"voice": voice, "rate": "+0%", "pitch": "+0Hz", "volume": "+0%"}
-
-
-def _detect_lang(voice: str) -> str:
-    return "vi" if voice.startswith("vi") else "en"
+class TTSRequest(BaseModel):
+    text: str
+    voice: str = "vi-female"
+    speed: float = Field(1.0, ge=0.5, le=2.0)
+    pitch: str = "+0Hz"
+    engine: str = "edge-tts"
+    generate_srt: bool = False
+    words_per_cue: int = Field(8, ge=1, le=30)
 
 
-def _run_tts_to_dir(req: TTSRequest, job_dir: Path) -> tuple[Path, Optional[Path]]:
-    """Run TTS synchronously; return (mp3_path, srt_path_or_None)."""
-    mp3_path = job_dir / "output.mp3"
-    srt_path = job_dir / "output.srt"
-    job_dir.mkdir(parents=True, exist_ok=True)
-
-    vp = _resolve_voice_params(req.voice)
-    result = convert_text(
-        req.text,
-        mp3_path,
-        engine_name=req.engine.value,
-        voice=vp["voice"],
-        rate=vp["rate"],
-        pitch=vp["pitch"],
-        volume=vp["volume"],
-        lang=_detect_lang(req.voice),
-        speed=req.speed,
-    )
-
-    srt_out: Optional[Path] = None
-    if req.engine.value == "edge-tts" and result.boundaries:
-        try:
-            generate_srt_file(result.boundaries, srt_path, words_per_cue=req.words_per_cue)
-            srt_out = srt_path
-        except Exception as exc:
-            logger.warning("SRT generation failed: %s", exc)
-
-    return mp3_path, srt_out
+class SRTRequest(BaseModel):
+    text: str
+    voice: str = "vi-female"
+    speed: float = Field(1.0, ge=0.5, le=2.0)
+    pitch: str = "+0Hz"
+    engine: str = "edge-tts"
+    words_per_cue: int = Field(8, ge=1, le=30)
 
 
-def _run_tts_job(job_id: str, req: TTSRequest) -> None:
-    job = _jobs[job_id]
-    job["status"] = JobStatus.processing
-    job_dir = _TEMP_DIR / job_id
-    try:
-        mp3_path, srt_path = _run_tts_to_dir(req, job_dir)
-        job.update({
-            "status": JobStatus.done,
-            "has_mp3": mp3_path.exists(),
-            "has_srt": srt_path is not None and srt_path.exists(),
-            "mp3_path": str(mp3_path),
-            "srt_path": str(srt_path) if srt_path else None,
-        })
-    except Exception as exc:
-        logger.exception("Job %s failed: %s", job_id, exc)
-        job.update({"status": JobStatus.error, "message": str(exc)})
+class VoiceInfo(BaseModel):
+    key: str
+    voice: str
+    rate: str
+    pitch: str
+    desc: str
+    lang: str
 
 
-# ---------------------------------------------------------------------------
-# Routes – Voices
-# ---------------------------------------------------------------------------
+def _sse(event: str, data: str) -> str:
+    return f"event: {event}\ndata: {data}\n\n"
+
+
+# ── GET /api/voices ──────────────────────────────────────────────────────
 
 @router.get("/voices")
-async def get_voices(_: dict = Depends(get_current_user)):
+async def list_voices():
+    from src.tts import VOICE_PRESETS
+    from src.engines import ENGINES
+
     voices = []
-    for preset_id, preset in VOICE_PRESETS.items():
-        gender = (
-            "female"
-            if "female" in preset_id or "HoaiMy" in preset.voice or "Aria" in preset.voice
-            else "male"
-        )
-        voices.append({
-            "id": preset_id,
-            "name": preset.desc,
-            "voice": preset.voice,
-            "gender": gender,
-            "lang": "vi" if preset_id.startswith("vi") else "en",
-            "rate": preset.rate,
-            "pitch": preset.pitch,
-        })
-    return {"voices": voices}
+    for key, preset in VOICE_PRESETS.items():
+        lang = "vi" if key.startswith("vi-") else "en"
+        voices.append(VoiceInfo(
+            key=key,
+            voice=preset.voice,
+            rate=preset.rate,
+            pitch=preset.pitch,
+            desc=preset.desc,
+            lang=lang,
+        ))
+
+    return {
+        "voices": [v.model_dump() for v in voices],
+        "engines": list(ENGINES.keys()),
+    }
 
 
-# ---------------------------------------------------------------------------
-# Routes – Synchronous convert → ZIP (Vercel-compatible)
-# ---------------------------------------------------------------------------
+# ── POST /api/tts/convert ───────────────────────────────────────────────
 
 @router.post("/tts/convert")
-async def convert_sync(req: TTSRequest, _: dict = Depends(get_current_user)):
-    """
-    Synchronous TTS conversion. Returns a ZIP archive containing:
-    - output.mp3  (always present)
-    - output.srt  (only when engine=edge-tts and timing data is available)
+async def convert_tts(req: TTSRequest, request: Request):
+    from src.tts import VOICE_PRESETS
+    from src.srt import build_srt
+    from src.engines import get_engine
 
-    Use this endpoint for serverless/Vercel deployments.
-    """
-    job_dir = _TEMP_DIR / str(uuid.uuid4())
-    try:
-        mp3_path, srt_path = _run_tts_to_dir(req, job_dir)
+    text = req.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Text must not be empty.")
 
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            if mp3_path.exists():
-                zf.write(mp3_path, "output.mp3")
-            if srt_path and srt_path.exists():
-                zf.write(srt_path, "output.srt")
+    preset = VOICE_PRESETS.get(req.voice)
+    voice_name = preset.voice if preset else req.voice
+    rate = _speed_to_rate(req.speed)
+    pitch = req.pitch
+    lang = "vi" if req.voice.startswith("vi") else "en"
 
-        buf.seek(0)
-        return Response(
-            content=buf.getvalue(),
-            media_type="application/zip",
-            headers={"Content-Disposition": 'attachment; filename="tts-output.zip"'},
-        )
-    except Exception as exc:
-        logger.exception("Sync TTS failed: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc))
-    finally:
-        # Clean up temp files
-        import shutil
-        shutil.rmtree(job_dir, ignore_errors=True)
+    async def event_stream():
+        queue: asyncio.Queue = asyncio.Queue()
 
+        async def on_progress(current: int, total: int):
+            await queue.put(("progress", {"chunk": current, "total": total}))
 
-# ---------------------------------------------------------------------------
-# Routes – Job-based (local dev only)
-# ---------------------------------------------------------------------------
+        async def run_tts():
+            try:
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    audio_path = Path(tmpdir) / "output.mp3"
+                    engine = get_engine(req.engine)
 
-@router.post("/tts", response_model=JobResponse)
-async def create_tts_job(
-    req: TTSRequest,
-    background_tasks: BackgroundTasks,
-    _: dict = Depends(get_current_user),
-):
-    job_id = str(uuid.uuid4())
-    _jobs[job_id] = {
-        "status": JobStatus.pending,
-        "has_mp3": False,
-        "has_srt": False,
-        "mp3_path": None,
-        "srt_path": None,
-        "message": None,
-    }
-    thread = threading.Thread(target=_run_tts_job, args=(job_id, req), daemon=True)
-    thread.start()
-    return JobResponse(job_id=job_id, status=JobStatus.pending)
+                    if req.engine == "edge-tts":
+                        result = await engine._convert_async(
+                            text, audio_path, voice_name, rate, pitch, "+0%",
+                            write_audio=True, on_progress=on_progress,
+                        )
+                    else:
+                        result = await asyncio.to_thread(
+                            engine.convert, text, audio_path,
+                            lang=lang, speed=req.speed,
+                        )
 
+                    buf = io.BytesIO()
+                    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                        if result.audio_path.exists():
+                            zf.write(result.audio_path, "output.mp3")
+                        if req.generate_srt and result.boundaries:
+                            srt_doc = build_srt(result.boundaries, words_per_cue=req.words_per_cue)
+                            zf.writestr("output.srt", srt_doc.to_string())
 
-@router.get("/tts/{job_id}", response_model=JobResponse)
-async def get_job_status(job_id: str, _: dict = Depends(get_current_user)):
-    job = _jobs.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    return JobResponse(
-        job_id=job_id,
-        status=job["status"],
-        message=job.get("message"),
-        has_mp3=job.get("has_mp3", False),
-        has_srt=job.get("has_srt", False),
+                    buf.seek(0)
+                    zip_b64 = base64.b64encode(buf.read()).decode("ascii")
+                    await queue.put(("done", zip_b64))
+            except asyncio.CancelledError:
+                await queue.put(("cancelled", None))
+            except Exception as exc:
+                logger.exception("TTS conversion failed")
+                await queue.put(("error", str(exc)))
+
+        task = asyncio.create_task(run_tts())
+
+        try:
+            while True:
+                if await request.is_disconnected():
+                    task.cancel()
+                    return
+
+                try:
+                    msg = await asyncio.wait_for(queue.get(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    continue
+
+                event_type, payload = msg
+                if event_type == "progress":
+                    yield _sse("progress", json.dumps(payload))
+                elif event_type == "done":
+                    yield _sse("done", payload)
+                    return
+                elif event_type == "error":
+                    yield _sse("error", json.dumps({"detail": payload}))
+                    return
+                elif event_type == "cancelled":
+                    return
+        except asyncio.CancelledError:
+            task.cancel()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
-@router.get("/tts/{job_id}/download/mp3")
-async def download_mp3(job_id: str, _: dict = Depends(get_current_user)):
-    job = _jobs.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    if job["status"] != JobStatus.done or not job.get("mp3_path"):
-        raise HTTPException(status_code=400, detail="MP3 not ready")
-    mp3_path = Path(job["mp3_path"])
-    if not mp3_path.exists():
-        raise HTTPException(status_code=404, detail="MP3 file missing")
-    return FileResponse(path=str(mp3_path), media_type="audio/mpeg", filename="output.mp3")
+# ── POST /api/tts/srt ─────────────────────────────────────────────────
 
+@router.post("/tts/srt")
+async def generate_srt(req: SRTRequest, request: Request):
+    from src.tts import VOICE_PRESETS
+    from src.srt import build_srt
+    from src.engines import get_engine
 
-@router.get("/tts/{job_id}/download/srt")
-async def download_srt(job_id: str, _: dict = Depends(get_current_user)):
-    job = _jobs.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    if job["status"] != JobStatus.done or not job.get("srt_path"):
-        raise HTTPException(status_code=400, detail="SRT not ready")
-    srt_path = Path(job["srt_path"])
-    if not srt_path.exists():
-        raise HTTPException(status_code=404, detail="SRT file missing")
-    return FileResponse(
-        path=str(srt_path),
-        media_type="text/plain; charset=utf-8",
-        filename="output.srt",
+    text = req.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Text must not be empty.")
+
+    preset = VOICE_PRESETS.get(req.voice)
+    voice_name = preset.voice if preset else req.voice
+    rate = _speed_to_rate(req.speed)
+    pitch = req.pitch
+    lang = "vi" if req.voice.startswith("vi") else "en"
+
+    async def event_stream():
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def on_progress(current: int, total: int):
+            await queue.put(("progress", {"chunk": current, "total": total}))
+
+        async def run_tts():
+            try:
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    audio_path = Path(tmpdir) / "output.mp3"
+                    engine = get_engine(req.engine)
+
+                    if req.engine == "edge-tts":
+                        result = await engine._convert_async(
+                            text, audio_path, voice_name, rate, pitch, "+0%",
+                            write_audio=False, on_progress=on_progress,
+                        )
+                    else:
+                        result = await asyncio.to_thread(
+                            engine.convert, text, audio_path,
+                            lang=lang, speed=req.speed,
+                        )
+
+                    if not result.boundaries:
+                        await queue.put(("error", "No word boundaries returned by engine."))
+                        return
+
+                    srt_doc = build_srt(result.boundaries, words_per_cue=req.words_per_cue)
+                    await queue.put(("done", srt_doc.to_string()))
+            except asyncio.CancelledError:
+                await queue.put(("cancelled", None))
+            except Exception as exc:
+                logger.exception("TTS SRT generation failed")
+                await queue.put(("error", str(exc)))
+
+        task = asyncio.create_task(run_tts())
+
+        try:
+            while True:
+                if await request.is_disconnected():
+                    task.cancel()
+                    return
+
+                try:
+                    msg = await asyncio.wait_for(queue.get(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    continue
+
+                event_type, payload = msg
+                if event_type == "progress":
+                    yield _sse("progress", json.dumps(payload))
+                elif event_type == "done":
+                    yield _sse("done", payload)
+                    return
+                elif event_type == "error":
+                    yield _sse("error", json.dumps({"detail": payload}))
+                    return
+                elif event_type == "cancelled":
+                    return
+        except asyncio.CancelledError:
+            task.cancel()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+def _speed_to_rate(speed: float) -> str:
+    pct = round((speed - 1.0) * 100)
+    return f"{pct:+d}%"

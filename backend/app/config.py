@@ -1,20 +1,13 @@
-from pydantic_settings import BaseSettings
-from pathlib import Path
+"""Environment-based configuration."""
+
+from __future__ import annotations
+
+import os
 
 
-class Settings(BaseSettings):
-    TTS_USERNAME: str = "admin"
-    TTS_PASSWORD: str = "admin123"
-    SECRET_KEY: str = "supersecretkey-change-in-production-32chars"
-    ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 480
-    CORS_ORIGINS: str = "http://localhost:3000"
-
-    model_config = {"env_file": Path(__file__).parent.parent / ".env", "extra": "ignore"}
-
-    @property
-    def cors_origins_list(self) -> list[str]:
-        return [o.strip() for o in self.CORS_ORIGINS.split(",")]
+def get_cors_origins() -> list[str]:
+    raw = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:3000")
+    return [o.strip() for o in raw.split(",") if o.strip()]
 
 
-settings = Settings()
+MAX_TEXT_LENGTH = int(os.getenv("MAX_TEXT_LENGTH", "5000"))
